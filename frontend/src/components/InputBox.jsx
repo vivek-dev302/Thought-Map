@@ -87,6 +87,7 @@ export default function InputBox({ loading, error, onOrganize }) {
     const value = text.trim();
     if (!value || loading) return;
     onOrganize(value);
+    setText("");
   }
 
   return (
@@ -102,7 +103,13 @@ export default function InputBox({ loading, error, onOrganize }) {
         className={`mic-button ${listening ? "listening" : ""}`}
         onClick={toggleMic}
         disabled={!SpeechRecognition}
-        title={SpeechRecognition ? (listening ? "Stop listening" : "Speak your thoughts") : "Voice input unavailable"}
+        title={
+          SpeechRecognition
+            ? listening
+              ? "Stop listening"
+              : "Speak your thoughts"
+            : "Voice input unavailable"
+        }
         aria-label={listening ? "Stop listening" : "Microphone"}
       >
         🎤
@@ -118,17 +125,27 @@ export default function InputBox({ loading, error, onOrganize }) {
             <span>Listening — click mic to stop</span>
           </div>
         ) : (
-          <label htmlFor="thought-input">What's on your mind?</label>
+          <label htmlFor="thought-input">Dump thoughts or ask to edit/reorganize...</label>
         )}
         <textarea
           id="thought-input"
           value={text}
           onChange={(event) => setText(event.target.value)}
-          placeholder="Type a messy thought, or use the microphone first..."
+          placeholder="Dump thoughts, or refine the map (e.g., 'split Studies into College and Career', 'move Python to Career')..."
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              submit();
+            }
+          }}
         />
       </div>
 
-      <button type="submit" className="organize-button" disabled={loading || !text.trim()}>
+      <button
+        type="submit"
+        className="organize-button"
+        disabled={loading || !text.trim()}
+      >
         {loading ? "Organizing..." : "Organize Thoughts"}
       </button>
 

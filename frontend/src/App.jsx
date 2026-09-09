@@ -3,11 +3,11 @@ import Canvas from "./components/Canvas.jsx";
 import InputBox from "./components/InputBox.jsx";
 import ThemeToggle from "./components/ThemeToggle.jsx";
 
-const THEME_KEY = "thoughtmap-theme";
+const THEME_KEY = "thoughtcanvas-theme";
 
 export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || "dark");
-  const [graph, setGraph] = useState({ nodes: [], edges: [] });
+  const [organizeResult, setOrganizeResult] = useState({ items: [], relationships: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -23,7 +23,11 @@ export default function App() {
       const response = await fetch("/api/organize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({
+          text,
+          current_items: organizeResult.items,
+          current_relationships: organizeResult.relationships,
+        }),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -32,7 +36,10 @@ export default function App() {
           : data.detail;
         throw new Error(detail || data.error || "Could not organize thoughts");
       }
-      setGraph({ nodes: data.nodes || [], edges: data.edges || [] });
+      setOrganizeResult({
+        items: data.items || [],
+        relationships: data.relationships || [],
+      });
     } catch (err) {
       setError(err.message || "Could not organize thoughts");
     } finally {
@@ -43,10 +50,18 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1 className="logo">ThoughtMap</h1>
-        <ThemeToggle theme={theme} onToggle={() => setTheme(theme === "dark" ? "light" : "dark")} />
+        <h1 className="logo">ThoughtCanvas</h1>
+        <ThemeToggle
+          theme={theme}
+          onToggle={() => setTheme(theme === "dark" ? "light" : "dark")}
+        />
       </header>
-      <Canvas graph={graph} loading={loading} />
+      <Canvas
+        items={organizeResult.items}
+        relationships={organizeResult.relationships}
+        loading={loading}
+        theme={theme}
+      />
       <InputBox loading={loading} error={error} onOrganize={organize} />
     </div>
   );

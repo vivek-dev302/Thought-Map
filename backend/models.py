@@ -3,29 +3,45 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-NodeType = Literal["area", "problem", "planning", "thought"]
-RelationshipType = Literal["contains", "related_to"]
+ItemKind = Literal[
+    "area", "concern", "problem", "plan",
+    "opinion", "observation", "question", "note",
+]
 
 
-class GraphNode(BaseModel):
+class Relationship(BaseModel):
+    from_id: str = Field(
+        description="Source item ID (e.g. the cause, antecedent, condition, or blocker)"
+    )
+    to_id: str = Field(
+        description="Target item ID (e.g. the effect, consequence, or impacted thought)"
+    )
+    label: str = Field(
+        default="",
+        description="Short explicit connecting phrase (e.g. 'because', 'makes slow', 'prevents')"
+    )
+    kind: str = Field(
+        default="relates_to",
+        description="Relationship type: causes | prevents | leads_to | blocks | relates_to"
+    )
+
+
+class SemanticItem(BaseModel):
     id: str
-    label: str
-    type: NodeType
+    text: str
+    kind: ItemKind
+    areas: list[str] = Field(default_factory=list)
 
 
-class GraphEdge(BaseModel):
-    source: str
-    target: str
-    relationship: RelationshipType
-
-
-class ThoughtGraph(BaseModel):
-    nodes: list[GraphNode] = Field(default_factory=list)
-    edges: list[GraphEdge] = Field(default_factory=list)
+class OrganizeResponse(BaseModel):
+    items: list[SemanticItem] = Field(default_factory=list)
+    relationships: list[Relationship] = Field(default_factory=list)
 
 
 class OrganizeRequest(BaseModel):
     text: str
+    current_items: list[SemanticItem] = Field(default_factory=list)
+    current_relationships: list[Relationship] = Field(default_factory=list)
 
 
 class ErrorResponse(BaseModel):

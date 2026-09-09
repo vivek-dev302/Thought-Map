@@ -3,16 +3,15 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env before anything else so all modules see the env vars
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from gemini import organize_thoughts
-from models import ErrorResponse, OrganizeRequest, ThoughtGraph
+from models import ErrorResponse, OrganizeRequest, OrganizeResponse
 
-app = FastAPI(title="Thought Organizer")
+app = FastAPI(title="ThoughtCanvas")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,21 +29,23 @@ app.add_middleware(
 def health():
     return {"status": "ok"}
 
-print("inside main")
 
 @app.post(
     "/api/organize",
-    response_model=ThoughtGraph,
+    response_model=OrganizeResponse,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
 )
 def organize(request: OrganizeRequest):
-    print(f"[ROUTE HIT] text={request.text[:30]!r}", flush=True)
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
 
     try:
-        return organize_thoughts(text)
+        return organize_thoughts(
+            text=text,
+            current_items=request.current_items,
+            current_relationships=request.current_relationships,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:

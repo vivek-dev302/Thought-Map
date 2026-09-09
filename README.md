@@ -1,29 +1,29 @@
-# ThoughtMap — AI Thought Organizer & Visualizer (MVP)
+# ThoughtCanvas — Freeform AI Brain-Dump Whiteboard
 
-A small local app that turns messy thoughts into a simple flowchart.
+A freeform digital whiteboard for brain dumping, with AI helping organize and classify thoughts into loose whiteboard clusters.
 
 ```text
-User types or speaks
-        ↓
-Text appears in the input (editable)
-        ↓
-Organize Thoughts
-        ↓
-FastAPI → Gemini → JSON graph
-        ↓
-React Flow canvas
+User types or speaks brain dump
+              ↓
+Text appears in input (editable)
+              ↓
+       Organize Thoughts
+              ↓
+FastAPI → Gemini → Semantic Items JSON
+              ↓
+tldraw infinite canvas (freeform layout)
 ```
 
 ## Project layout
 
 ```text
-backend/     FastAPI + Gemini
-frontend/    React + Vite + React Flow
+backend/     FastAPI + Gemini SDK (Python)
+frontend/    React + Vite + tldraw (JavaScript)
 ```
 
 ## 1. Backend setup
 
-You need Python 3.10+ and a [Gemini API key](https://aistudio.google.com/apikey).
+Requires Python 3.10+ and a [Gemini API key](https://aistudio.google.com/apikey).
 
 ```powershell
 cd backend
@@ -56,13 +56,7 @@ Start the API:
 uvicorn main:app --reload --port 8000
 ```
 
-Check it:
-
-```text
-GET http://127.0.0.1:8000/api/health
-```
-
-Expected: `{"status":"ok"}`
+Health check: `GET http://127.0.0.1:8000/api/health` → `{"status":"ok"}`
 
 ## 2. Frontend setup
 
@@ -74,18 +68,20 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173
+Open `http://localhost:5173`
 
-The Vite dev server proxies `/api` to the FastAPI app on port 8000.
+The Vite dev server proxies `/api` to the FastAPI backend on port 8000.
 
 ## How to use
 
-1. Type a thought, or click the microphone (Chrome/Edge) and then edit the transcript.
-2. Click **Organize Thoughts**.
-3. Wait for **Organizing your thoughts...**
-4. Drag, pan, zoom the map. Double-click a node to rename it. Press Delete to remove a selected node.
-
-Theme: use ☀ / ☾ in the header.
+1. **Freeform Whiteboard**: Draw, write text, add shapes, arrows, notes anywhere on the infinite canvas at any time.
+2. **AI Brain Dump**:
+   - Type messy thoughts into the bottom input box, or click the microphone 🎤 to speak.
+   - Click **Organize Thoughts** (or press Ctrl+Enter / Cmd+Enter).
+   - Gemini extracts semantic thoughts into structured items classified by type (`area`, `concern`, `problem`, `plan`, `opinion`, `observation`, `question`, `note`).
+   - Items are placed onto the canvas in a loose, whiteboard arrangement grouped by area (not a rigid graph).
+3. **Continue Arranging**: Drag, group, draw arrows, circle items, or add new shapes freely.
+4. **Theme**: Switch between Light and Dark mode using the ☀ / ☾ button in the header.
 
 ## API
 
@@ -95,7 +91,7 @@ Request:
 
 ```json
 {
-  "text": "My body is getting worse. I get sick whenever the temperature changes..."
+  "text": "My body is getting worse. I get sick whenever the temperature changes, my joints feel weak, gym progress is slow. I want to learn Python."
 }
 ```
 
@@ -103,57 +99,52 @@ Response:
 
 ```json
 {
-  "nodes": [
-    { "id": "health", "label": "Health", "type": "area" },
-    { "id": "sickness", "label": "Getting sick frequently", "type": "problem" }
-  ],
-  "edges": [
-    { "source": "health", "target": "sickness", "relationship": "contains" }
+  "items": [
+    {
+      "id": "item_1",
+      "text": "Health & Fitness",
+      "kind": "area",
+      "areas": ["Health & Fitness"]
+    },
+    {
+      "id": "item_2",
+      "text": "Getting sick when temperature changes",
+      "kind": "concern",
+      "areas": ["Health & Fitness"]
+    },
+    {
+      "id": "item_3",
+      "text": "Weak joints",
+      "kind": "concern",
+      "areas": ["Health & Fitness"]
+    },
+    {
+      "id": "item_4",
+      "text": "Gym progress is slow",
+      "kind": "problem",
+      "areas": ["Health & Fitness"]
+    },
+    {
+      "id": "item_5",
+      "text": "Learn Python",
+      "kind": "plan",
+      "areas": ["Skills"]
+    }
   ]
 }
 ```
 
-Empty text returns HTTP 400. Gemini or JSON failures return HTTP 500.
+## Semantic Kinds
 
-## Example Gemini input / output
-
-**Input**
-
-> My body is getting worse. I get sick whenever the temperature changes, I get fever sometimes, my joints feel weak, and I've been going to the gym for three years but I'm not making much progress. Other people seem to be growing faster than me.
-
-**Example output**
-
-```json
-{
-  "nodes": [
-    { "id": "health", "label": "Health", "type": "area" },
-    { "id": "sickness", "label": "Getting sick frequently", "type": "problem" },
-    { "id": "temperature", "label": "Temperature changes", "type": "thought" },
-    { "id": "fever", "label": "Fever sometimes", "type": "problem" },
-    { "id": "joints", "label": "Weak joints", "type": "problem" },
-    { "id": "gym", "label": "Gym", "type": "area" },
-    { "id": "little_progress", "label": "Little progress after three years", "type": "problem" },
-    { "id": "others_faster", "label": "Others seem to grow faster", "type": "thought" }
-  ],
-  "edges": [
-    { "source": "health", "target": "sickness", "relationship": "contains" },
-    { "source": "sickness", "target": "temperature", "relationship": "contains" },
-    { "source": "health", "target": "fever", "relationship": "contains" },
-    { "source": "health", "target": "joints", "relationship": "contains" },
-    { "source": "gym", "target": "little_progress", "relationship": "contains" },
-    { "source": "gym", "target": "others_faster", "relationship": "contains" }
-  ]
-}
-```
-
-The model only extracts what you said. It does not diagnose, invent causes, or add extra topics.
+- `area`: Broad life domain (e.g. Health & Fitness, Career, Skills)
+- `concern`: Worries, uncertainties, vulnerabilities
+- `problem`: Explicitly stated obstacles, difficulties, issues
+- `plan`: Intentions or actions to take
+- `opinion`: Beliefs, interpretations, comparisons
+- `observation`: Neutral facts or experiences noted
+- `question`: Inquiries or uncertainties to explore
+- `note`: General fallback information
 
 ## Voice input
 
-Uses the browser Speech Recognition API. There is no speech backend.
-
-If the browser does not support it, the microphone button is disabled.
-
-## Not included (on purpose)
-
-Saving maps, accounts, a database, Docker, and extra AI chat. The code is small enough to add those later.
+Uses the browser Web Speech Recognition API directly on the client. Audio is not transmitted to any backend.
