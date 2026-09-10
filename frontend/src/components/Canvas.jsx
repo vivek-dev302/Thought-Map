@@ -3,12 +3,17 @@ import { Tldraw } from "tldraw";
 import { createShapeId, createBindingId, toRichText } from "@tldraw/tlschema";
 import "tldraw/tldraw.css";
 
-/**
- * Visual configuration for thought kinds:
- * Uses clean hand-drawn strokes with ZERO filled backgrounds (fill: "none").
- * Employs transparent ellipses for subareas/key concepts, transparent rectangles
- * for friction/problem points, and varied text typography for thoughts.
- */
+// Sort priority: friction/problems first, then actions, then passive items
+const KIND_ORDER = {
+  problem: 0,
+  concern: 1,
+  question: 2,
+  plan: 3,
+  observation: 4,
+  opinion: 5,
+  note: 6,
+};
+
 const KIND_CONFIG = {
   area: {
     shapeType: "text",
@@ -68,25 +73,69 @@ const KIND_CONFIG = {
   },
 };
 
+function sanitizeId(str) {
+  return String(str).replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function getItemShapeDefinition(item) {
+  const config = KIND_CONFIG[item.kind] || KIND_CONFIG.note;
+  if (config.shapeType === "geo") {
+    const charsPerLine = 20;
+    const numLines = Math.max(1, Math.ceil(item.text.length / charsPerLine));
+    const shapeW = 240;
+    const shapeH = Math.max(64, numLines * 26 + 28);
+    return {
+      type: "geo",
+      w: shapeW,
+      h: shapeH,
+      props: {
+        geo: config.geo || "rectangle",
+        w: shapeW,
+        h: shapeH,
+        color: config.color || "red",
+        fill: "none",
+        dash: "draw",
+        size: "s",
+        font: "draw",
+        align: "middle",
+        verticalAlign: "middle",
+        richText: toRichText(item.text),
+      },
+    };
+  } else {
+    let displayText = item.text;
+    if (config.prefix) displayText = `${config.prefix}${item.text}`;
+    if (config.wrapQuotes) displayText = `“${item.text}”`;
+
+    const charsPerLine = 22;
+    const numLines = Math.max(1, Math.ceil(displayText.length / charsPerLine));
+    const textW = 230;
+    const textH = Math.max(36, numLines * 28 + 12);
+
+    return {
+      type: "text",
+      w: textW,
+      h: textH,
+      props: {
+        richText: toRichText(displayText),
+        color: config.color || "black",
+        size: config.size || "s",
+        font: config.font || "draw",
+        autoSize: false,
+        w: textW,
+      },
+    };
+  }
+}
+
 /**
- * Places semantic items on the canvas in an organic, transparent whiteboard map.
- * Replaces previously AI-generated shapes cleanly for multi-turn editing.
+ * Places or incrementally updates semantic items on the canvas.
+ * Preserves user-moved shape positions across multi-turn prompts and deletes only removed items.
  */
-function placeItemsOnCanvas(editor, items, relationships = [], aiShapeIdsRef) {
+function syncItemsWithCanvas(editor, items, relationships = [], aiShapeIdsRef) {
   if (!editor || !items || items.length === 0) return;
 
-  // 1. Clean up previous AI shapes to support multi-turn conversational edits (e.g. splitting areas)
-  if (aiShapeIdsRef && aiShapeIdsRef.current && aiShapeIdsRef.current.size > 0) {
-    try {
-      const idsToDelete = Array.from(aiShapeIdsRef.current);
-      editor.deleteShapes(idsToDelete);
-      aiShapeIdsRef.current.clear();
-    } catch (err) {
-      console.warn("Could not clean up previous AI shapes:", err);
-    }
-  }
-
-  // 2. Group items by primary area
+  // 1. Group items by primary area
   const areaGroups = new Map();
   const ungrouped = [];
 
@@ -113,36 +162,89 @@ function placeItemsOnCanvas(editor, items, relationships = [], aiShapeIdsRef) {
     areaGroups.set("General", { heading: null, items: ungrouped });
   }
 
+  // 2. Identify new active AI shape IDs and delete any shapes that were removed
+  const newAiShapeIds = new Set();
+  const itemShapeMap = new Map(); // itemId -> { shapeId, x, y, w, h }
+
+  for (const [areaName, group] of areaGroups.entries()) {
+    const headingId = createShapeId(`area_${sanitizeId(areaName)}`);
+    newAiShapeIds.add(headingId);
+    if (group.heading) {
+      itemShapeMap.set(group.heading.id, { shapeId: headingId });
+    }
+
+    for (const item of group.items) {
+      const shapeId = createShapeId(`thought_${sanitizeId(item.id)}`);
+      newAiShapeIds.add(shapeId);
+      itemShapeMap.set(item.id, { shapeId });
+    }
+  }
+
+  for (const rel of relationships || []) {
+    const arrowId = createShapeId(
+      `arrow_${sanitizeId(rel.from_id)}_${sanitizeId(rel.to_id)}`
+    );
+    newAiShapeIds.add(arrowId);
+  }
+
+  // Delete obsolete AI shapes (e.g. user said "delete X")
+  if (aiShapeIdsRef && aiShapeIdsRef.current) {
+    const idsToDelete = [];
+    for (const existingId of aiShapeIdsRef.current) {
+      if (!newAiShapeIds.has(existingId) && editor.getShape(existingId)) {
+        idsToDelete.push(existingId);
+      }
+    }
+    if (idsToDelete.length > 0) {
+      try {
+        editor.deleteShapes(idsToDelete);
+      } catch (err) {
+        console.warn("Could not delete removed shapes:", err);
+      }
+    }
+    aiShapeIdsRef.current = newAiShapeIds;
+  }
+
+  // 3. Layout Constants
   const baseStartX = 120;
   const baseStartY = 120;
-  const COL_WIDTH = 240;
-  const COL_GAP = 30;
-  const CLUSTER_GAP_X = 160;
+  const COL_WIDTH = 250;
+  const COL_GAP = 40;
+  const CLUSTER_GAP_X = 180;
   const CLUSTER_GAP_Y = 140;
   const CLUSTERS_PER_ROW = 2;
+  const HEADING_GAP = 64;
 
   const shapesToCreate = [];
+  const shapesToUpdate = [];
   const bindingsToCreate = [];
-  const itemShapeMap = new Map(); // itemId -> { shapeId, x, y, w, h }
-  const currentAiShapeIds = new Set();
 
-  // 3. Pre-calculate dimensions for each 2D area cluster
+  // 4. Determine placement: check if any existing clusters exist on canvas
+  let anyExistingCluster = false;
+  for (const [areaName] of areaGroups.entries()) {
+    const headingId = createShapeId(`area_${sanitizeId(areaName)}`);
+    if (editor.getShape(headingId)) {
+      anyExistingCluster = true;
+      break;
+    }
+  }
+
+  // Pre-calculate clusters for layout if initial placement is needed
   const clusters = [];
   for (const [areaName, group] of areaGroups.entries()) {
     const isMultiCol = group.items.length >= 3;
     const numCols = isMultiCol ? 2 : 1;
     const clusterWidth = numCols * COL_WIDTH + (numCols - 1) * COL_GAP;
 
-    // Estimate heights of items
     const colHeights = new Array(numCols).fill(0);
     for (let i = 0; i < group.items.length; i++) {
       const item = group.items[i];
-      const config = KIND_CONFIG[item.kind] || KIND_CONFIG.note;
-      const h = config.shapeType === "geo" ? 68 : 46;
+      const def = getItemShapeDefinition(item);
+      const gap = def.type === "geo" ? 24 : 20;
       const targetCol = isMultiCol ? (colHeights[0] <= colHeights[1] ? 0 : 1) : 0;
-      colHeights[targetCol] += h + 18;
+      colHeights[targetCol] += def.h + gap;
     }
-    const clusterHeight = 60 + Math.max(...colHeights, 80);
+    const clusterHeight = HEADING_GAP + Math.max(...colHeights, 80);
 
     clusters.push({
       areaName,
@@ -154,7 +256,6 @@ function placeItemsOnCanvas(editor, items, relationships = [], aiShapeIdsRef) {
     });
   }
 
-  // 4. Calculate 2D positions for each cluster
   const rowMaxHeights = [];
   for (let i = 0; i < clusters.length; i += CLUSTERS_PER_ROW) {
     const rowClusters = clusters.slice(i, i + CLUSTERS_PER_ROW);
@@ -163,151 +264,158 @@ function placeItemsOnCanvas(editor, items, relationships = [], aiShapeIdsRef) {
   }
 
   let clusterIndex = 0;
-  for (const cluster of clusters) {
-    const rowIndex = Math.floor(clusterIndex / CLUSTERS_PER_ROW);
-    const colIndex = clusterIndex % CLUSTERS_PER_ROW;
+  let hasCreatedAnyNewShape = false;
 
-    let currentClusterY = baseStartY;
-    for (let r = 0; r < rowIndex; r++) {
-      currentClusterY += rowMaxHeights[r] + CLUSTER_GAP_Y;
+  for (const cluster of clusters) {
+    const headingId = createShapeId(`area_${sanitizeId(cluster.areaName)}`);
+    const existingHeading = editor.getShape(headingId);
+
+    let clusterX, clusterY;
+
+    if (existingHeading) {
+      // PRESERVE user's custom position for this area
+      clusterX = existingHeading.x;
+      clusterY = existingHeading.y;
+    } else if (!anyExistingCluster) {
+      // Fresh canvas layout (Turn 1)
+      const rowIndex = Math.floor(clusterIndex / CLUSTERS_PER_ROW);
+      const colIndex = clusterIndex % CLUSTERS_PER_ROW;
+
+      let currentClusterY = baseStartY;
+      for (let r = 0; r < rowIndex; r++) {
+        currentClusterY += rowMaxHeights[r] + CLUSTER_GAP_Y;
+      }
+
+      const jitterX = (Math.random() - 0.5) * 10;
+      const jitterY = (Math.random() - 0.5) * 8;
+      clusterX = baseStartX + colIndex * (540 + CLUSTER_GAP_X) + jitterX;
+      clusterY = currentClusterY + jitterY;
+    } else {
+      // New area added to an already customized canvas: place in open space
+      const pageBounds = editor.getCurrentPageBounds();
+      clusterX = pageBounds ? pageBounds.maxX + 120 : baseStartX;
+      clusterY = pageBounds ? pageBounds.minY : baseStartY;
     }
 
-    const jitterX = (Math.random() - 0.5) * 16;
-    const jitterY = (Math.random() - 0.5) * 14;
-    const clusterX = baseStartX + colIndex * (500 + CLUSTER_GAP_X) + jitterX;
-    const clusterY = currentClusterY + jitterY;
-
-    // A. Area Heading (Level 1: Large prominent text)
+    // A. Area Heading Text
     const headingText = cluster.group.heading
       ? cluster.group.heading.text
       : cluster.areaName.toUpperCase();
 
-    const headingId = createShapeId();
-    shapesToCreate.push({
-      id: headingId,
-      type: "text",
-      x: clusterX,
-      y: clusterY,
-      props: {
-        richText: toRichText(headingText),
-        size: "m",
-        font: "draw",
-        color: "blue",
-        autoSize: true,
-      },
-    });
-    currentAiShapeIds.add(headingId);
-
-    if (cluster.group.heading) {
-      itemShapeMap.set(cluster.group.heading.id, {
-        shapeId: headingId,
+    if (!existingHeading) {
+      shapesToCreate.push({
+        id: headingId,
+        type: "text",
         x: clusterX,
         y: clusterY,
-        w: 220,
-        h: 40,
+        props: {
+          richText: toRichText(headingText),
+          size: "m",
+          font: "draw",
+          color: "blue",
+          autoSize: true,
+        },
       });
+      hasCreatedAnyNewShape = true;
     }
 
-    // B. Place thoughts inside this cluster
-    const colTops = [clusterY + 54, clusterY + (cluster.isMultiCol ? 62 : 54)];
+    const headingInfo = itemShapeMap.get(cluster.group.heading?.id) || {};
+    headingInfo.shapeId = headingId;
+    headingInfo.x = clusterX;
+    headingInfo.y = clusterY;
+    headingInfo.w = 220;
+    headingInfo.h = 40;
+    if (cluster.group.heading) {
+      itemShapeMap.set(cluster.group.heading.id, headingInfo);
+    }
+
+    // B. Sort items by semantic kind
+    cluster.group.items.sort(
+      (a, b) => (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99)
+    );
+
+    // C. Position thoughts inside this cluster
+    const topAfterHeading = clusterY + HEADING_GAP;
+    const colTops = [topAfterHeading, topAfterHeading];
 
     for (let itemIdx = 0; itemIdx < cluster.group.items.length; itemIdx++) {
       const item = cluster.group.items[itemIdx];
-      const config = KIND_CONFIG[item.kind] || KIND_CONFIG.note;
+      const def = getItemShapeDefinition(item);
+      const shapeId = createShapeId(`thought_${sanitizeId(item.id)}`);
+      const existingShape = editor.getShape(shapeId);
 
-      const targetCol = cluster.isMultiCol
-        ? colTops[0] <= colTops[1]
-          ? 0
-          : 1
-        : 0;
-
-      const itemX =
-        clusterX +
-        targetCol * (COL_WIDTH + COL_GAP) +
-        (Math.random() - 0.5) * 10;
-      const itemY = colTops[targetCol] + (Math.random() - 0.5) * 6;
-
-      const shapeId = createShapeId();
-      currentAiShapeIds.add(shapeId);
-
-      if (config.shapeType === "geo") {
-        // Transparent outline shape with zero fill (fill: "none")
-        const shapeW = Math.max(180, Math.min(280, item.text.length * 8 + 36));
-        const shapeH = 64;
-
-        shapesToCreate.push({
+      if (existingShape) {
+        // PRESERVE user's position! Update props if needed
+        shapesToUpdate.push({
           id: shapeId,
-          type: "geo",
-          x: itemX,
-          y: itemY,
-          props: {
-            geo: config.geo || "rectangle",
-            w: shapeW,
-            h: shapeH,
-            color: config.color || "red",
-            fill: "none",
-            dash: "draw",
-            size: "s",
-            font: "draw",
-            align: "middle",
-            verticalAlign: "middle",
-            richText: toRichText(item.text),
-          },
+          type: def.type,
+          props: def.props,
         });
 
         itemShapeMap.set(item.id, {
           shapeId,
-          x: itemX,
-          y: itemY,
-          w: shapeW,
-          h: shapeH,
+          x: existingShape.x,
+          y: existingShape.y,
+          w: def.w,
+          h: def.h,
         });
 
-        colTops[targetCol] = itemY + shapeH + 18;
+        // Advance column top for subsequent new items if positioned under this cluster
+        const currentGap = def.type === "geo" ? 24 : 20;
+        const currentBottom = existingShape.y + def.h + currentGap;
+        if (currentBottom > colTops[0]) {
+          colTops[0] = currentBottom;
+        }
       } else {
-        // Hand-drawn typography with semantic size/color level
-        let displayText = item.text;
-        if (config.prefix) displayText = `${config.prefix}${item.text}`;
-        if (config.wrapQuotes) displayText = `“${item.text}”`;
+        // Brand new item: compute position under this cluster
+        const targetCol = cluster.isMultiCol
+          ? colTops[0] <= colTops[1]
+            ? 0
+            : 1
+          : 0;
+
+        const itemX =
+          clusterX +
+          targetCol * (COL_WIDTH + COL_GAP) +
+          (Math.random() - 0.5) * 6;
+        const itemY = colTops[targetCol];
 
         shapesToCreate.push({
           id: shapeId,
-          type: "text",
+          type: def.type,
           x: itemX,
           y: itemY,
-          props: {
-            richText: toRichText(displayText),
-            color: config.color || "black",
-            size: config.size || "s",
-            font: config.font || "draw",
-            autoSize: true,
-          },
+          props: def.props,
         });
+        hasCreatedAnyNewShape = true;
 
         itemShapeMap.set(item.id, {
           shapeId,
           x: itemX,
           y: itemY,
-          w: 200,
-          h: 42,
+          w: def.w,
+          h: def.h,
         });
 
-        colTops[targetCol] = itemY + 44 + 14;
+        const gap = def.type === "geo" ? 24 : 20;
+        colTops[targetCol] = itemY + def.h + gap;
       }
     }
 
     clusterIndex += 1;
   }
 
-  // 5. Create Explicit Curved Arrows with Dynamic Bindings
+  // 5. Create or update Curved Arrows with Dynamic Bindings
   if (Array.isArray(relationships) && relationships.length > 0) {
     for (const rel of relationships) {
       const fromItem = itemShapeMap.get(rel.from_id);
       const toItem = itemShapeMap.get(rel.to_id);
 
       if (fromItem && toItem) {
-        const arrowId = createShapeId();
-        currentAiShapeIds.add(arrowId);
+        const arrowId = createShapeId(
+          `arrow_${sanitizeId(rel.from_id)}_${sanitizeId(rel.to_id)}`
+        );
+        const existingArrow = editor.getShape(arrowId);
 
         const startX = fromItem.x + fromItem.w / 2;
         const startY = fromItem.y + fromItem.h / 2;
@@ -317,56 +425,77 @@ function placeItemsOnCanvas(editor, items, relationships = [], aiShapeIdsRef) {
         const deltaX = endX - startX;
         const deltaY = endY - startY;
 
-        shapesToCreate.push({
-          id: arrowId,
-          type: "arrow",
-          x: startX,
-          y: startY,
-          props: {
-            kind: "arc",
-            start: { x: 0, y: 0 },
-            end: { x: deltaX, y: deltaY },
-            bend: 16,
-            color: "grey",
-            dash: "draw",
-            size: "s",
-            arrowheadStart: "none",
-            arrowheadEnd: "arrow",
-            richText: toRichText(rel.label || ""),
-          },
-        });
+        if (!existingArrow) {
+          shapesToCreate.push({
+            id: arrowId,
+            type: "arrow",
+            x: startX,
+            y: startY,
+            props: {
+              kind: "arc",
+              start: { x: 0, y: 0 },
+              end: { x: deltaX, y: deltaY },
+              bend: 10,
+              color: "grey",
+              dash: "draw",
+              size: "s",
+              arrowheadStart: "none",
+              arrowheadEnd: "arrow",
+              labelPosition: 0.5,
+              richText: toRichText(rel.label || ""),
+            },
+          });
+          hasCreatedAnyNewShape = true;
 
-        bindingsToCreate.push(
-          {
-            id: createBindingId(),
-            type: "arrow",
-            fromId: arrowId,
-            toId: fromItem.shapeId,
-            props: {
-              terminal: "start",
-              normalizedAnchor: { x: 0.5, y: 0.5 },
-              isExact: false,
-              isPrecise: false,
+          bindingsToCreate.push(
+            {
+              id: createBindingId(),
+              type: "arrow",
+              fromId: arrowId,
+              toId: fromItem.shapeId,
+              props: {
+                terminal: "start",
+                normalizedAnchor: { x: 0.5, y: 0.5 },
+                isExact: false,
+                isPrecise: false,
+              },
             },
-          },
-          {
-            id: createBindingId(),
+            {
+              id: createBindingId(),
+              type: "arrow",
+              fromId: arrowId,
+              toId: toItem.shapeId,
+              props: {
+                terminal: "end",
+                normalizedAnchor: { x: 0.5, y: 0.5 },
+                isExact: false,
+                isPrecise: false,
+              },
+            }
+          );
+        } else {
+          shapesToUpdate.push({
+            id: arrowId,
             type: "arrow",
-            fromId: arrowId,
-            toId: toItem.shapeId,
             props: {
-              terminal: "end",
-              normalizedAnchor: { x: 0.5, y: 0.5 },
-              isExact: false,
-              isPrecise: false,
+              richText: toRichText(rel.label || ""),
+              labelPosition: 0.5,
             },
-          }
-        );
+          });
+        }
       }
     }
   }
 
-  // 6. Commit shapes and bindings to tldraw
+  // 6. Commit updates and creations to tldraw
+  if (shapesToUpdate.length > 0) {
+    try {
+      editor.updateShapes(shapesToUpdate);
+    } catch (err) {
+      console.warn("Could not update existing shapes:", err);
+    }
+  }
+
   if (shapesToCreate.length > 0) {
     editor.createShapes(shapesToCreate);
 
@@ -377,11 +506,9 @@ function placeItemsOnCanvas(editor, items, relationships = [], aiShapeIdsRef) {
         console.warn("Could not create arrow bindings:", err);
       }
     }
+  }
 
-    if (aiShapeIdsRef) {
-      aiShapeIdsRef.current = currentAiShapeIds;
-    }
-
+  if (!anyExistingCluster && hasCreatedAnyNewShape) {
     setTimeout(() => {
       editor.zoomToFit({ animation: { duration: 350 }, padding: 90 });
     }, 60);
@@ -392,6 +519,31 @@ export default function Canvas({ items, relationships = [], loading, theme }) {
   const [editor, setEditor] = useState(null);
   const prevItemsRef = useRef(null);
   const aiShapeIdsRef = useRef(new Set());
+
+  // Populate aiShapeIdsRef on mount from existing shapes (from persistence)
+  const onMountHandler = (mountedEditor) => {
+    setEditor(mountedEditor);
+    if (theme) {
+      mountedEditor.user.updateUserPreferences({
+        colorScheme: theme,
+      });
+    }
+
+    try {
+      const existingShapes = mountedEditor.getCurrentPageShapes();
+      for (const shape of existingShapes) {
+        if (
+          shape.id.startsWith("shape:thought_") ||
+          shape.id.startsWith("shape:area_") ||
+          shape.id.startsWith("shape:arrow_")
+        ) {
+          aiShapeIdsRef.current.add(shape.id);
+        }
+      }
+    } catch (e) {
+      console.warn("Could not read existing canvas shapes:", e);
+    }
+  };
 
   // Sync theme with tldraw
   useEffect(() => {
@@ -406,27 +558,21 @@ export default function Canvas({ items, relationships = [], loading, theme }) {
     }
   }, [editor, theme]);
 
-  // Place/update items when new items arrive from AI organize
+  // Incrementally place/update items when new items arrive from AI organize
   useEffect(() => {
     if (!editor || !items || items.length === 0) return;
     if (items === prevItemsRef.current) return;
     prevItemsRef.current = items;
 
-    placeItemsOnCanvas(editor, items, relationships, aiShapeIdsRef);
+    syncItemsWithCanvas(editor, items, relationships, aiShapeIdsRef);
   }, [editor, items, relationships]);
 
   return (
     <div className="canvas-wrap">
       <div className="tldraw-container">
         <Tldraw
-          onMount={(mountedEditor) => {
-            setEditor(mountedEditor);
-            if (theme) {
-              mountedEditor.user.updateUserPreferences({
-                colorScheme: theme,
-              });
-            }
-          }}
+          persistenceKey="thoughtcanvas_canvas_v1"
+          onMount={onMountHandler}
         />
       </div>
 

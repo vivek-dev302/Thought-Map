@@ -4,10 +4,18 @@ import InputBox from "./components/InputBox.jsx";
 import ThemeToggle from "./components/ThemeToggle.jsx";
 
 const THEME_KEY = "thoughtcanvas-theme";
+const DATA_KEY = "thoughtcanvas-data";
 
 export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem(THEME_KEY) || "dark");
-  const [organizeResult, setOrganizeResult] = useState({ items: [], relationships: [] });
+  const [organizeResult, setOrganizeResult] = useState(() => {
+    try {
+      const saved = localStorage.getItem(DATA_KEY);
+      return saved ? JSON.parse(saved) : { items: [], relationships: [] };
+    } catch {
+      return { items: [], relationships: [] };
+    }
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -15,6 +23,14 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DATA_KEY, JSON.stringify(organizeResult));
+    } catch (e) {
+      console.warn("Could not save canvas state to localStorage:", e);
+    }
+  }, [organizeResult]);
 
   async function organize(text) {
     setLoading(true);
