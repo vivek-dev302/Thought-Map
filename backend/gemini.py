@@ -52,8 +52,14 @@ Rules for Relationship Extraction (CRITICAL):
    - label: concise phrase describing the connection (e.g. "slows down", "because", "prevents")
    - kind: "causes" | "prevents" | "leads_to" | "blocks" | "relates_to"
 
+Rules for Spoken Voice Feedback (assistant_feedback):
+1. Provide a short, friendly, 1-sentence spoken summary in `assistant_feedback` describing what you did on the canvas.
+2. Keep it natural and concise (e.g., "Added three thoughts under Health and Fitness.", "Split studies into college and career and moved Python.", "Created a problem box for weak joints.").
+3. Do NOT provide philosophical or unsolicited advice; just state what was organized or updated.
+
 Return valid JSON:
 {
+  "assistant_feedback": "Short 1-sentence confirmation of what was added or changed on the canvas.",
   "items": [
     {
       "id": "item_1",
@@ -137,4 +143,8 @@ def _validate(result: OrganizeResponse) -> OrganizeResponse:
         if rel.from_id in seen_ids and rel.to_id in seen_ids and rel.from_id != rel.to_id:
             valid_relationships.append(rel)
 
-    return OrganizeResponse(items=unique_items, relationships=valid_relationships)
+    return OrganizeResponse(
+        items=unique_items,
+        relationships=valid_relationships,
+        assistant_feedback=result.assistant_feedback or ""
+    )

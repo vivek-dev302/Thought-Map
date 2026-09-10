@@ -1,4 +1,4 @@
-# ThoughtCanvas — Freeform AI Brain-Dump Whiteboard
+![alt text](image.png)# ThoughtCanvas — Freeform AI Brain-Dump Whiteboard
 
 A freeform digital whiteboard for brain dumping, with AI helping organize and classify thoughts into loose whiteboard clusters.
 

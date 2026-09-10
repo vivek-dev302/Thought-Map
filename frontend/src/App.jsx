@@ -32,7 +32,7 @@ export default function App() {
     }
   }, [organizeResult]);
 
-  async function organize(text) {
+  async function organize(text, options = {}) {
     setLoading(true);
     setError("");
     try {
@@ -56,8 +56,10 @@ export default function App() {
         items: data.items || [],
         relationships: data.relationships || [],
       });
+      return data;
     } catch (err) {
       setError(err.message || "Could not organize thoughts");
+      throw err;
     } finally {
       setLoading(false);
     }

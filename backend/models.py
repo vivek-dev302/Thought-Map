@@ -36,6 +36,10 @@ class SemanticItem(BaseModel):
 class OrganizeResponse(BaseModel):
     items: list[SemanticItem] = Field(default_factory=list)
     relationships: list[Relationship] = Field(default_factory=list)
+    assistant_feedback: str = Field(
+        default="",
+        description="A short, concise 1-sentence spoken confirmation of what was created, moved, or organized on the canvas."
+    )
 
 
 class OrganizeRequest(BaseModel):
