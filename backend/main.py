@@ -74,17 +74,32 @@ async def text_to_speech(
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
 )
 def organize(request: OrganizeRequest):
+    print(f"\n[BACKEND] 📥 Received /api/organize request:")
+    print(f"  - text: {request.text!r}")
+    print(f"  - intent: {request.intent}")
+    print(f"  - visual_type: {request.visual_type}")
+    print(f"  - current_canvas commands count: {len(request.current_canvas or [])}")
+
     text = request.text.strip()
     if not text:
+        print("[BACKEND] ❌ Error: Text is required")
         raise HTTPException(status_code=400, detail="Text is required")
 
     try:
-        return organize_thoughts(
-            text=text,
-            current_items=request.current_items,
-            current_relationships=request.current_relationships,
-        )
+        response = organize_thoughts(request)
+        print(f"[BACKEND] ✅ organize_thoughts succeeded:")
+        print(f"  - visual_type: {response.visual_type}")
+        print(f"  - user_intent: {response.user_intent}")
+        print(f"  - commands count: {len(response.commands)}")
+        print(f"  - assistant_feedback: {response.assistant_feedback!r}")
+        for idx, cmd in enumerate(response.commands):
+            print(f"    * Command {idx+1}: type={cmd.visual_type}, layout={cmd.layout}, elements={len(cmd.elements)}, connections={len(cmd.connections)}")
+        return response
     except ValueError as exc:
+        print(f"[BACKEND] ❌ ValueError in organize_thoughts: {exc}")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
+        print(f"[BACKEND] ❌ Unexpected error in organize_thoughts: {exc}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Gemini API failure: {exc}") from exc

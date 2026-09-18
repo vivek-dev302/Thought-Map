@@ -1,586 +1,690 @@
-import { useEffect, useRef, useState } from "react";
-import { Tldraw } from "tldraw";
-import { createShapeId, createBindingId, toRichText } from "@tldraw/tlschema";
-import "tldraw/tldraw.css";
-
-// Sort priority: friction/problems first, then actions, then passive items
-const KIND_ORDER = {
-  problem: 0,
-  concern: 1,
-  question: 2,
-  plan: 3,
-  observation: 4,
-  opinion: 5,
-  note: 6,
-};
-
-const KIND_CONFIG = {
-  area: {
-    shapeType: "text",
-    color: "blue",
-    size: "l",
-    font: "draw",
-  },
-  problem: {
-    shapeType: "geo",
-    geo: "rectangle",
-    color: "red",
-    fill: "none",
-    dash: "draw",
-    size: "s",
-    font: "draw",
-  },
-  concern: {
-    shapeType: "text",
-    color: "orange",
-    size: "s",
-    font: "draw",
-    prefix: "▲ ",
-  },
-  plan: {
-    shapeType: "text",
-    color: "green",
-    size: "s",
-    font: "draw",
-    prefix: "➔ ",
-  },
-  question: {
-    shapeType: "text",
-    color: "violet",
-    size: "s",
-    font: "draw",
-    prefix: "❓ ",
-  },
-  opinion: {
-    shapeType: "text",
-    color: "grey",
-    size: "s",
-    font: "draw",
-    wrapQuotes: true,
-  },
-  observation: {
-    shapeType: "text",
-    color: "black",
-    size: "s",
-    font: "draw",
-    prefix: "• ",
-  },
-  note: {
-    shapeType: "text",
-    color: "grey",
-    size: "s",
-    font: "draw",
-  },
-};
-
-function sanitizeId(str) {
-  return String(str).replace(/[^a-zA-Z0-9_-]/g, "_");
-}
-
-function getItemShapeDefinition(item) {
-  const config = KIND_CONFIG[item.kind] || KIND_CONFIG.note;
-  if (config.shapeType === "geo") {
-    const charsPerLine = 20;
-    const numLines = Math.max(1, Math.ceil(item.text.length / charsPerLine));
-    const shapeW = 240;
-    const shapeH = Math.max(64, numLines * 26 + 28);
-    return {
-      type: "geo",
-      w: shapeW,
-      h: shapeH,
-      props: {
-        geo: config.geo || "rectangle",
-        w: shapeW,
-        h: shapeH,
-        color: config.color || "red",
-        fill: "none",
-        dash: "draw",
-        size: "s",
-        font: "draw",
-        align: "middle",
-        verticalAlign: "middle",
-        richText: toRichText(item.text),
-      },
-    };
-  } else {
-    let displayText = item.text;
-    if (config.prefix) displayText = `${config.prefix}${item.text}`;
-    if (config.wrapQuotes) displayText = `“${item.text}”`;
-
-    const charsPerLine = 22;
-    const numLines = Math.max(1, Math.ceil(displayText.length / charsPerLine));
-    const textW = 230;
-    const textH = Math.max(36, numLines * 28 + 12);
-
-    return {
-      type: "text",
-      w: textW,
-      h: textH,
-      props: {
-        richText: toRichText(displayText),
-        color: config.color || "black",
-        size: config.size || "s",
-        font: config.font || "draw",
-        autoSize: false,
-        w: textW,
-      },
-    };
-  }
-}
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Excalidraw, convertToExcalidrawElements } from "@excalidraw/excalidraw";
+import "@excalidraw/excalidraw/index.css";
 
 /**
- * Places or incrementally updates semantic items on the canvas.
- * Preserves user-moved shape positions across multi-turn prompts and deletes only removed items.
+ * VisualCanvas: Main canvas component using Excalidraw based on CLAUDE.md architecture
+ *
+ * Responsibilities:
+ * 1. Takes application-level visual commands (VisualCommand) from backend/App
+ * 2. Deterministically converts VisualElements and VisualConnections to Excalidraw elements
+ *    using Excalidraw's official convertToExcalidrawElements utility
+ * 3. Applies typography hierarchy (Headers: 22px, Subtopics: 18px, Notes: 15px)
+ * 4. Decorates elements with context-aware semantic emojis and harmonious category palettes
+ * 5. Calculates collision-free dynamic dimensions and columnar spacing for brain dumps and flows
  */
-function syncItemsWithCanvas(editor, items, relationships = [], aiShapeIdsRef) {
-  if (!editor || !items || items.length === 0) return;
 
-  // 1. Group items by primary area
-  const areaGroups = new Map();
-  const ungrouped = [];
+// Helper to check if string starts with an emoji
+const hasEmoji = (str) => {
+  if (!str) return false;
+  const regex = /^[\p{Extended_Pictographic}☀-➿]/u;
+  return regex.test(str.trim());
+};
 
-  for (const item of items) {
-    if (item.kind === "area") {
-      const key = item.text;
-      if (!areaGroups.has(key)) {
-        areaGroups.set(key, { heading: item, items: [] });
-      } else {
-        areaGroups.get(key).heading = item;
+// Category Icon and Styling Palette Mapping
+const getCategoryStyleAndIcon = (categoryStr, textStr, kind, darkMode) => {
+  const cat = (categoryStr || "").toLowerCase();
+  const text = (textStr || "").toLowerCase();
+
+  let defaultIcon = "";
+  let stroke = darkMode ? "#94a3b8" : "#475569";
+  let bg = darkMode ? "rgba(148, 163, 184, 0.12)" : "rgba(71, 85, 105, 0.08)";
+
+  if (cat.includes("health") || cat.includes("fit") || text.includes("fitness") || text.includes("health") || text.includes("gym") || text.includes("boxing")) {
+    defaultIcon = "🏃";
+    stroke = darkMode ? "#34d399" : "#059669";
+    bg = darkMode ? "rgba(52, 211, 153, 0.16)" : "rgba(5, 150, 105, 0.09)";
+  } else if (cat.includes("career") || cat.includes("job") || cat.includes("ai") || cat.includes("work") || text.includes("saas") || text.includes("rag") || text.includes("career")) {
+    defaultIcon = "💼";
+    stroke = darkMode ? "#818cf8" : "#4f46e5";
+    bg = darkMode ? "rgba(129, 140, 248, 0.16)" : "rgba(79, 70, 229, 0.09)";
+  } else if (cat.includes("comm") || cat.includes("social") || cat.includes("people") || text.includes("communication") || text.includes("lonely") || text.includes("video")) {
+    defaultIcon = "💬";
+    stroke = darkMode ? "#c084fc" : "#9333ea";
+    bg = darkMode ? "rgba(192, 132, 252, 0.16)" : "rgba(147, 51, 234, 0.09)";
+  } else if (cat.includes("study") || cat.includes("academic") || cat.includes("college") || cat.includes("learn") || text.includes("academic") || text.includes("coursework")) {
+    defaultIcon = "📚";
+    stroke = darkMode ? "#38bdf8" : "#0284c7";
+    bg = darkMode ? "rgba(56, 189, 248, 0.16)" : "rgba(2, 132, 199, 0.09)";
+  } else if (cat.includes("skill") || cat.includes("hobby") || cat.includes("personal") || text.includes("drawing") || text.includes("swimming") || text.includes("chess")) {
+    defaultIcon = "🎯";
+    stroke = darkMode ? "#fbbf24" : "#d97706";
+    bg = darkMode ? "rgba(251, 191, 36, 0.18)" : "rgba(217, 119, 6, 0.10)";
+  } else if (kind === "problem" || cat.includes("concern") || text.includes("concern") || text.includes("weak") || text.includes("worry") || text.includes("problem")) {
+    defaultIcon = "⚠️";
+    stroke = darkMode ? "#fb7185" : "#e11d48";
+    bg = darkMode ? "rgba(251, 113, 133, 0.16)" : "rgba(225, 29, 72, 0.09)";
+  } else if (kind === "goal" || text.includes("goal") || text.includes("plan")) {
+    defaultIcon = "🎯";
+    stroke = darkMode ? "#2dd4bf" : "#0d9488";
+    bg = darkMode ? "rgba(45, 212, 191, 0.16)" : "rgba(13, 148, 136, 0.09)";
+  }
+
+  return { defaultIcon, stroke, bg };
+};
+
+export default function VisualCanvas({ visualCommands = [], loading, theme }) {
+  const [excalidrawAPI, setExcalidrawAPI] = useState(null);
+  const [canvasElements, setCanvasElements] = useState([]);
+  const [, setAppState] = useState({});
+  const prevCommandsRef = useRef(null);
+  const isDarkMode = theme === "dark";
+
+  // Callback to capture Excalidraw API
+  const handleExcalidrawAPI = useCallback((api) => {
+    console.log("[CANVAS] 🎨 Excalidraw API initialized");
+    setExcalidrawAPI(api);
+  }, []);
+
+  // Convert and render visual commands whenever they change
+  useEffect(() => {
+    if (!excalidrawAPI) {
+      console.log("[CANVAS] ⏳ Excalidraw API not ready yet");
+      return;
+    }
+
+    if (!visualCommands || visualCommands.length === 0) {
+      console.log("[CANVAS] ℹ️ visualCommands is empty or cleared");
+      if (excalidrawAPI) {
+        try {
+          excalidrawAPI.updateScene({ elements: [] });
+          setCanvasElements([]);
+        } catch (clearErr) {
+          console.warn("[CANVAS] Error clearing scene:", clearErr);
+        }
       }
-    } else if (item.areas && item.areas.length > 0) {
-      const primaryArea = item.areas[0];
-      if (!areaGroups.has(primaryArea)) {
-        areaGroups.set(primaryArea, { heading: null, items: [] });
-      }
-      areaGroups.get(primaryArea).items.push(item);
-    } else {
-      ungrouped.push(item);
-    }
-  }
-
-  if (ungrouped.length > 0) {
-    areaGroups.set("General", { heading: null, items: ungrouped });
-  }
-
-  // 2. Identify new active AI shape IDs and delete any shapes that were removed
-  const newAiShapeIds = new Set();
-  const itemShapeMap = new Map(); // itemId -> { shapeId, x, y, w, h }
-
-  for (const [areaName, group] of areaGroups.entries()) {
-    const headingId = createShapeId(`area_${sanitizeId(areaName)}`);
-    newAiShapeIds.add(headingId);
-    if (group.heading) {
-      itemShapeMap.set(group.heading.id, { shapeId: headingId });
+      prevCommandsRef.current = [];
+      return;
     }
 
-    for (const item of group.items) {
-      const shapeId = createShapeId(`thought_${sanitizeId(item.id)}`);
-      newAiShapeIds.add(shapeId);
-      itemShapeMap.set(item.id, { shapeId });
-    }
-  }
-
-  for (const rel of relationships || []) {
-    const arrowId = createShapeId(
-      `arrow_${sanitizeId(rel.from_id)}_${sanitizeId(rel.to_id)}`
-    );
-    newAiShapeIds.add(arrowId);
-  }
-
-  // Delete obsolete AI shapes (e.g. user said "delete X")
-  if (aiShapeIdsRef && aiShapeIdsRef.current) {
-    const idsToDelete = [];
-    for (const existingId of aiShapeIdsRef.current) {
-      if (!newAiShapeIds.has(existingId) && editor.getShape(existingId)) {
-        idsToDelete.push(existingId);
-      }
-    }
-    if (idsToDelete.length > 0) {
-      try {
-        editor.deleteShapes(idsToDelete);
-      } catch (err) {
-        console.warn("Could not delete removed shapes:", err);
-      }
-    }
-    aiShapeIdsRef.current = newAiShapeIds;
-  }
-
-  // 3. Layout Constants
-  const baseStartX = 120;
-  const baseStartY = 120;
-  const COL_WIDTH = 250;
-  const COL_GAP = 40;
-  const CLUSTER_GAP_X = 180;
-  const CLUSTER_GAP_Y = 140;
-  const CLUSTERS_PER_ROW = 2;
-  const HEADING_GAP = 64;
-
-  const shapesToCreate = [];
-  const shapesToUpdate = [];
-  const bindingsToCreate = [];
-
-  // 4. Determine placement: check if any existing clusters exist on canvas
-  let anyExistingCluster = false;
-  for (const [areaName] of areaGroups.entries()) {
-    const headingId = createShapeId(`area_${sanitizeId(areaName)}`);
-    if (editor.getShape(headingId)) {
-      anyExistingCluster = true;
-      break;
-    }
-  }
-
-  // Pre-calculate clusters for layout if initial placement is needed
-  const clusters = [];
-  for (const [areaName, group] of areaGroups.entries()) {
-    const isMultiCol = group.items.length >= 3;
-    const numCols = isMultiCol ? 2 : 1;
-    const clusterWidth = numCols * COL_WIDTH + (numCols - 1) * COL_GAP;
-
-    const colHeights = new Array(numCols).fill(0);
-    for (let i = 0; i < group.items.length; i++) {
-      const item = group.items[i];
-      const def = getItemShapeDefinition(item);
-      const gap = def.type === "geo" ? 24 : 20;
-      const targetCol = isMultiCol ? (colHeights[0] <= colHeights[1] ? 0 : 1) : 0;
-      colHeights[targetCol] += def.h + gap;
-    }
-    const clusterHeight = HEADING_GAP + Math.max(...colHeights, 80);
-
-    clusters.push({
-      areaName,
-      group,
-      isMultiCol,
-      numCols,
-      clusterWidth,
-      clusterHeight,
-    });
-  }
-
-  const rowMaxHeights = [];
-  for (let i = 0; i < clusters.length; i += CLUSTERS_PER_ROW) {
-    const rowClusters = clusters.slice(i, i + CLUSTERS_PER_ROW);
-    const maxH = Math.max(...rowClusters.map((c) => c.clusterHeight));
-    rowMaxHeights.push(maxH);
-  }
-
-  let clusterIndex = 0;
-  let hasCreatedAnyNewShape = false;
-
-  for (const cluster of clusters) {
-    const headingId = createShapeId(`area_${sanitizeId(cluster.areaName)}`);
-    const existingHeading = editor.getShape(headingId);
-
-    let clusterX, clusterY;
-
-    if (existingHeading) {
-      // PRESERVE user's custom position for this area
-      clusterX = existingHeading.x;
-      clusterY = existingHeading.y;
-    } else if (!anyExistingCluster) {
-      // Fresh canvas layout (Turn 1)
-      const rowIndex = Math.floor(clusterIndex / CLUSTERS_PER_ROW);
-      const colIndex = clusterIndex % CLUSTERS_PER_ROW;
-
-      let currentClusterY = baseStartY;
-      for (let r = 0; r < rowIndex; r++) {
-        currentClusterY += rowMaxHeights[r] + CLUSTER_GAP_Y;
-      }
-
-      const jitterX = (Math.random() - 0.5) * 10;
-      const jitterY = (Math.random() - 0.5) * 8;
-      clusterX = baseStartX + colIndex * (540 + CLUSTER_GAP_X) + jitterX;
-      clusterY = currentClusterY + jitterY;
-    } else {
-      // New area added to an already customized canvas: place in open space
-      const pageBounds = editor.getCurrentPageBounds();
-      clusterX = pageBounds ? pageBounds.maxX + 120 : baseStartX;
-      clusterY = pageBounds ? pageBounds.minY : baseStartY;
+    if (visualCommands === prevCommandsRef.current) {
+      return;
     }
 
-    // A. Area Heading Text
-    const headingText = cluster.group.heading
-      ? cluster.group.heading.text
-      : cluster.areaName.toUpperCase();
+    console.log(`[CANVAS] 📥 Received ${visualCommands.length} visual command(s):`, visualCommands);
+    prevCommandsRef.current = visualCommands;
 
-    if (!existingHeading) {
-      shapesToCreate.push({
-        id: headingId,
-        type: "text",
-        x: clusterX,
-        y: clusterY,
-        props: {
-          richText: toRichText(headingText),
-          size: "m",
-          font: "draw",
-          color: "blue",
-          autoSize: true,
+    applyVisualCommands(excalidrawAPI, visualCommands, isDarkMode);
+  }, [excalidrawAPI, visualCommands, isDarkMode]);
+
+  // Handle theme changes on existing canvas
+  useEffect(() => {
+    if (!excalidrawAPI) return;
+    try {
+      excalidrawAPI.updateScene({
+        appState: {
+          theme: isDarkMode ? "dark" : "light",
+          viewBackgroundColor: isDarkMode ? "#121212" : "#f8f9fa",
         },
       });
-      hasCreatedAnyNewShape = true;
-    }
-
-    const headingInfo = itemShapeMap.get(cluster.group.heading?.id) || {};
-    headingInfo.shapeId = headingId;
-    headingInfo.x = clusterX;
-    headingInfo.y = clusterY;
-    headingInfo.w = 220;
-    headingInfo.h = 40;
-    if (cluster.group.heading) {
-      itemShapeMap.set(cluster.group.heading.id, headingInfo);
-    }
-
-    // B. Sort items by semantic kind
-    cluster.group.items.sort(
-      (a, b) => (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99)
-    );
-
-    // C. Position thoughts inside this cluster
-    const topAfterHeading = clusterY + HEADING_GAP;
-    const colTops = [topAfterHeading, topAfterHeading];
-
-    for (let itemIdx = 0; itemIdx < cluster.group.items.length; itemIdx++) {
-      const item = cluster.group.items[itemIdx];
-      const def = getItemShapeDefinition(item);
-      const shapeId = createShapeId(`thought_${sanitizeId(item.id)}`);
-      const existingShape = editor.getShape(shapeId);
-
-      if (existingShape) {
-        // PRESERVE user's position! Update props if needed
-        shapesToUpdate.push({
-          id: shapeId,
-          type: def.type,
-          props: def.props,
-        });
-
-        itemShapeMap.set(item.id, {
-          shapeId,
-          x: existingShape.x,
-          y: existingShape.y,
-          w: def.w,
-          h: def.h,
-        });
-
-        // Advance column top for subsequent new items if positioned under this cluster
-        const currentGap = def.type === "geo" ? 24 : 20;
-        const currentBottom = existingShape.y + def.h + currentGap;
-        if (currentBottom > colTops[0]) {
-          colTops[0] = currentBottom;
-        }
-      } else {
-        // Brand new item: compute position under this cluster
-        const targetCol = cluster.isMultiCol
-          ? colTops[0] <= colTops[1]
-            ? 0
-            : 1
-          : 0;
-
-        const itemX =
-          clusterX +
-          targetCol * (COL_WIDTH + COL_GAP) +
-          (Math.random() - 0.5) * 6;
-        const itemY = colTops[targetCol];
-
-        shapesToCreate.push({
-          id: shapeId,
-          type: def.type,
-          x: itemX,
-          y: itemY,
-          props: def.props,
-        });
-        hasCreatedAnyNewShape = true;
-
-        itemShapeMap.set(item.id, {
-          shapeId,
-          x: itemX,
-          y: itemY,
-          w: def.w,
-          h: def.h,
-        });
-
-        const gap = def.type === "geo" ? 24 : 20;
-        colTops[targetCol] = itemY + def.h + gap;
-      }
-    }
-
-    clusterIndex += 1;
-  }
-
-  // 5. Create or update Curved Arrows with Dynamic Bindings
-  if (Array.isArray(relationships) && relationships.length > 0) {
-    for (const rel of relationships) {
-      const fromItem = itemShapeMap.get(rel.from_id);
-      const toItem = itemShapeMap.get(rel.to_id);
-
-      if (fromItem && toItem) {
-        const arrowId = createShapeId(
-          `arrow_${sanitizeId(rel.from_id)}_${sanitizeId(rel.to_id)}`
-        );
-        const existingArrow = editor.getShape(arrowId);
-
-        const startX = fromItem.x + fromItem.w / 2;
-        const startY = fromItem.y + fromItem.h / 2;
-        const endX = toItem.x + toItem.w / 2;
-        const endY = toItem.y + toItem.h / 2;
-
-        const deltaX = endX - startX;
-        const deltaY = endY - startY;
-
-        if (!existingArrow) {
-          shapesToCreate.push({
-            id: arrowId,
-            type: "arrow",
-            x: startX,
-            y: startY,
-            props: {
-              kind: "arc",
-              start: { x: 0, y: 0 },
-              end: { x: deltaX, y: deltaY },
-              bend: 10,
-              color: "grey",
-              dash: "draw",
-              size: "s",
-              arrowheadStart: "none",
-              arrowheadEnd: "arrow",
-              labelPosition: 0.5,
-              richText: toRichText(rel.label || ""),
-            },
-          });
-          hasCreatedAnyNewShape = true;
-
-          bindingsToCreate.push(
-            {
-              id: createBindingId(),
-              type: "arrow",
-              fromId: arrowId,
-              toId: fromItem.shapeId,
-              props: {
-                terminal: "start",
-                normalizedAnchor: { x: 0.5, y: 0.5 },
-                isExact: false,
-                isPrecise: false,
-              },
-            },
-            {
-              id: createBindingId(),
-              type: "arrow",
-              fromId: arrowId,
-              toId: toItem.shapeId,
-              props: {
-                terminal: "end",
-                normalizedAnchor: { x: 0.5, y: 0.5 },
-                isExact: false,
-                isPrecise: false,
-              },
-            }
-          );
-        } else {
-          shapesToUpdate.push({
-            id: arrowId,
-            type: "arrow",
-            props: {
-              richText: toRichText(rel.label || ""),
-              labelPosition: 0.5,
-            },
-          });
-        }
-      }
-    }
-  }
-
-  // 6. Commit updates and creations to tldraw
-  if (shapesToUpdate.length > 0) {
-    try {
-      editor.updateShapes(shapesToUpdate);
-    } catch (err) {
-      console.warn("Could not update existing shapes:", err);
-    }
-  }
-
-  if (shapesToCreate.length > 0) {
-    editor.createShapes(shapesToCreate);
-
-    if (bindingsToCreate.length > 0) {
-      try {
-        editor.createBindings(bindingsToCreate);
-      } catch (err) {
-        console.warn("Could not create arrow bindings:", err);
-      }
-    }
-  }
-
-  if (!anyExistingCluster && hasCreatedAnyNewShape) {
-    setTimeout(() => {
-      editor.zoomToFit({ animation: { duration: 350 }, padding: 90 });
-    }, 60);
-  }
-}
-
-export default function Canvas({ items, relationships = [], loading, theme }) {
-  const [editor, setEditor] = useState(null);
-  const prevItemsRef = useRef(null);
-  const aiShapeIdsRef = useRef(new Set());
-
-  // Populate aiShapeIdsRef on mount from existing shapes (from persistence)
-  const onMountHandler = (mountedEditor) => {
-    setEditor(mountedEditor);
-    if (theme) {
-      mountedEditor.user.updateUserPreferences({
-        colorScheme: theme,
-      });
-    }
-
-    try {
-      const existingShapes = mountedEditor.getCurrentPageShapes();
-      for (const shape of existingShapes) {
-        if (
-          shape.id.startsWith("shape:thought_") ||
-          shape.id.startsWith("shape:area_") ||
-          shape.id.startsWith("shape:arrow_")
-        ) {
-          aiShapeIdsRef.current.add(shape.id);
-        }
-      }
     } catch (e) {
-      console.warn("Could not read existing canvas shapes:", e);
+      console.warn("[CANVAS] Theme update error:", e);
+    }
+  }, [excalidrawAPI, isDarkMode]);
+
+  /**
+   * Apply all visual commands to the Excalidraw scene
+   */
+  const applyVisualCommands = (api, commands, darkMode) => {
+    try {
+      console.log("[CANVAS] ⚙️ Starting conversion of visual commands to Excalidraw scene elements...");
+      const elementsMap = new Map();
+
+      commands.forEach((command, cmdIdx) => {
+        console.log(`[CANVAS] 🔄 Processing Command #${cmdIdx + 1}: visual_type=${command.visual_type}, layout=${command.layout}, elements=${command.elements?.length || 0}, connections=${command.connections?.length || 0}`);
+        const converted = convertVisualCommandToExcalidraw(command, cmdIdx, darkMode);
+        converted.forEach((el) => {
+          elementsMap.set(el.id, el);
+        });
+      });
+
+      const finalElements = Array.from(elementsMap.values());
+      console.log(`[CANVAS] 📊 Total Excalidraw elements generated: ${finalElements.length}`);
+
+      if (finalElements.length > 0) {
+        // Update Excalidraw scene
+        api.updateScene({
+          elements: finalElements,
+          appState: {
+            theme: darkMode ? "dark" : "light",
+            viewBackgroundColor: darkMode ? "#121212" : "#f8f9fa",
+          },
+        });
+
+        setCanvasElements(finalElements);
+        console.log("[CANVAS] ✅ Excalidraw scene updated successfully");
+
+        // Fit canvas content into viewport
+        setTimeout(() => {
+          try {
+            api.scrollToContent(finalElements, {
+              fitToContent: true,
+              padding: 90,
+            });
+            console.log("[CANVAS] 🔍 scrollToContent executed");
+          } catch (scrollErr) {
+            console.warn("[CANVAS] scrollToContent warning:", scrollErr);
+          }
+        }, 150);
+      } else {
+        console.warn("[CANVAS] ⚠️ No elements were generated from visual commands");
+      }
+    } catch (error) {
+      console.error("[CANVAS] ❌ Error in applyVisualCommands:", error);
     }
   };
 
-  // Sync theme with tldraw
-  useEffect(() => {
-    if (!editor) return;
-    const currentScheme =
-      editor.user.getUserPreferences().colorScheme ??
-      (editor.user.getIsDarkMode() ? "dark" : "light");
-    if (currentScheme !== theme) {
-      editor.user.updateUserPreferences({
-        colorScheme: theme,
+  /**
+   * Estimates suitable width and height based on typography and line-wrapping metrics
+   */
+  const estimateElementDimensions = (element, isHeader) => {
+    const targetWidth = isHeader ? 330 : 330;
+    const text = (element.text || "").trim();
+    const explicitLines = text.split("\n");
+    let wrappedLineCount = 0;
+
+    explicitLines.forEach((line) => {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) {
+        wrappedLineCount += 0.5;
+      } else {
+        // Average characters per line at ~15px font in 330px width with padding is ~30
+        wrappedLineCount += Math.max(1, Math.ceil(trimmed.length / 30));
+      }
+    });
+
+    // Enforce sufficient card height so multi-line text never overflows or collides
+    const computedHeight = isHeader
+      ? Math.max(62, 28 + wrappedLineCount * 28)
+      : Math.max(88, 36 + wrappedLineCount * 24);
+
+    // Container dimensions must NEVER be smaller than computed requirement
+    const width = Math.max(targetWidth, element.size?.width || 0);
+    const height = Math.max(computedHeight, element.size?.height || 0);
+
+    return { width, height };
+  };
+
+  /**
+   * Converts a single VisualCommand into an array of Excalidraw elements using convertToExcalidrawElements
+   */
+  const convertVisualCommandToExcalidraw = (command, cmdIndex, darkMode) => {
+    const rawElements = command.elements || [];
+    const rawConnections = command.connections || [];
+    const visualType = command.visual_type || "freeform";
+    const layout = command.layout || inferLayoutFromVisualType(visualType);
+
+    // Step 1: Calculate layout positions with intelligent category awareness
+    const positionedElements = calculateLayoutPositions(rawElements, layout, visualType, cmdIndex);
+
+    const skeletons = [];
+    const shapeLookup = new Map(); // id -> positionedElement
+
+    // Step 2: Build Skeletons for Shapes and Notes with Typography Hierarchy
+    positionedElements.forEach((element, index) => {
+      const elementId = String(element.id || `node_${cmdIndex}_${index}`);
+      shapeLookup.set(elementId, element);
+
+      const x = element.position?.x ?? 100;
+      const y = element.position?.y ?? 100;
+      const width = element.size?.width ?? 310;
+      const height = element.size?.height ?? 80;
+      let textContent = (element.text || "").trim();
+      const type = element.type || "rectangle";
+      const isHeader = element.metadata?.kind === "area" || elementId.toLowerCase().includes("area") || (type === "rectangle" && textContent.length < 32);
+
+      // Semantic decoration & icons
+      const category = element.metadata?.category || "";
+      const kind = element.metadata?.kind || (isHeader ? "area" : "thought");
+      const { defaultIcon, stroke, bg } = getCategoryStyleAndIcon(category, textContent, kind, darkMode);
+
+      // Auto-prefix icon if not already present and icon is available
+      if (isHeader && defaultIcon && !hasEmoji(textContent)) {
+        textContent = `${defaultIcon} ${textContent}`;
+      }
+
+      // Typography scaling
+      let fontSize = 15;
+      if (isHeader) {
+        fontSize = 21;
+      } else if (type === "diamond" || type === "ellipse") {
+        fontSize = 17;
+      } else if (kind === "step" || kind === "component") {
+        fontSize = 17;
+      }
+
+      // Style resolution
+      const strokeColor = element.style?.stroke_color || stroke;
+      const backgroundColor = element.style?.background_color || bg;
+
+      if (type === "text") {
+        skeletons.push({
+          id: elementId,
+          type: "text",
+          x,
+          y,
+          text: textContent,
+          fontSize: element.style?.font_size || fontSize,
+          strokeColor: darkMode ? "#f9fafb" : "#111827",
+        });
+      } else {
+        const excalidrawType = type === "note" ? "rectangle" : type;
+        const skeleton = {
+          id: elementId,
+          type: excalidrawType,
+          x,
+          y,
+          width,
+          height,
+          strokeColor,
+          backgroundColor,
+          fillStyle: "solid",
+          strokeWidth: element.style?.stroke_width || (isHeader ? 2 : 1.5),
+          strokeStyle: "solid",
+          roughness: 1,
+          roundness: (type === "rectangle" || type === "note") ? { type: 3 } : null,
+          label: textContent ? {
+            text: textContent,
+            fontSize: element.style?.font_size || fontSize,
+            textAlign: isHeader ? "center" : "left",
+            verticalAlign: isHeader ? "middle" : "top",
+          } : undefined,
+        };
+        skeletons.push(skeleton);
+      }
+    });
+
+    // Step 3: Build Skeletons for Arrow Connections (only for sequential/flow types, or explicit connections)
+    const isBrainDump = visualType === "brain_dump" || layout === "cluster";
+
+    rawConnections.forEach((conn, index) => {
+      const fromId = String(conn.from_id || conn.from);
+      const toId = String(conn.to_id || conn.to);
+      const fromShape = shapeLookup.get(fromId);
+      const toShape = shapeLookup.get(toId);
+
+      if (!fromShape || !toShape) {
+        console.warn(`[CANVAS] ⚠️ Arrow skipped: cannot find shapes for ${fromId} -> ${toId}`);
+        return;
+      }
+
+      // Arrow reduction rule: Skip header-to-note arrows in brain dump mode
+      if (isBrainDump) {
+        const fromKind = fromShape.metadata?.kind;
+        const toKind = toShape.metadata?.kind;
+        if (fromKind === "area" || toKind === "area" || fromId.includes("area") || toId.includes("area")) {
+          console.log(`[CANVAS] 🛡️ Pruning redundant brain dump arrow between ${fromId} and ${toId}`);
+          return;
+        }
+      }
+
+      const arrowX = fromShape.position?.x ?? 100;
+      const arrowY = fromShape.position?.y ?? 100;
+      const arrowColor = darkMode ? "#94a3b8" : "#64748b";
+
+      skeletons.push({
+        id: `arrow_${fromId}_${toId}_${index}`,
+        type: "arrow",
+        x: arrowX,
+        y: arrowY,
+        start: { id: fromId },
+        end: { id: toId },
+        strokeColor: arrowColor,
+        strokeWidth: 2,
+        roundness: { type: 2 },
+        label: conn.label ? {
+          text: conn.label,
+          fontSize: 13,
+        } : undefined,
+      });
+    });
+
+    console.log(`[CANVAS] ⚙️ Passing ${skeletons.length} skeletons to convertToExcalidrawElements...`);
+
+    // Step 4: Convert skeletons with official Excalidraw utility
+    try {
+      const excalidrawElements = convertToExcalidrawElements(skeletons, {
+        regenerateIds: false,
+      });
+      console.log(`[CANVAS] ✅ convertToExcalidrawElements produced ${excalidrawElements.length} elements`);
+      return excalidrawElements;
+    } catch (convErr) {
+      console.error("[CANVAS] ❌ convertToExcalidrawElements failed:", convErr);
+      return [];
+    }
+  };
+
+  /**
+   * Infer layout strategy from visual_type
+   */
+  const inferLayoutFromVisualType = (visualType) => {
+    switch (visualType) {
+      case "user_flow":
+      case "flowchart":
+      case "process":
+      case "timeline":
+      case "sequence":
+        return "left_to_right";
+      case "architecture":
+      case "system_diagram":
+        return "top_to_bottom";
+      case "brain_dump":
+      case "concept_map":
+      case "mind_map":
+        return "cluster";
+      default:
+        return "cluster";
+    }
+  };
+
+  /**
+   * Calculates deterministic coordinates when elements lack explicit positions
+   */
+  const calculateLayoutPositions = (elements, layout, visualType, cmdIndex) => {
+    const startX = 100 + cmdIndex * 60;
+    const startY = 100 + cmdIndex * 60;
+
+    // Brain dump & cluster layout: organize by category columns
+    if (layout === "cluster" || visualType === "brain_dump" || visualType === "concept_map" || visualType === "mind_map") {
+      return layoutClusterColumns(elements, startX, startY);
+    }
+
+    // Left-to-right layout (flowcharts, user flows, timelines)
+    if (layout === "left_to_right" || visualType === "user_flow" || visualType === "flowchart" || visualType === "process" || visualType === "timeline") {
+      const gapX = 110; // Extra runway for clean arrows
+      let currentX = startX;
+
+      return elements.map((el) => {
+        const hasExplicitPos = el.position && typeof el.position.x === "number" && typeof el.position.y === "number" && (el.position.x !== 0 || el.position.y !== 0);
+        const { width, height } = estimateElementDimensions(el, false);
+
+        if (hasExplicitPos) {
+          return { ...el, size: { width, height } };
+        }
+
+        const x = currentX;
+        const y = startY;
+        currentX += width + gapX;
+
+        return {
+          ...el,
+          position: { x, y },
+          size: { width, height },
+        };
       });
     }
-  }, [editor, theme]);
 
-  // Incrementally place/update items when new items arrive from AI organize
+    // Top-to-bottom layout (architecture diagrams, hierarchies)
+    if (layout === "top_to_bottom" || visualType === "architecture" || visualType === "system_diagram") {
+      const gapY = 80;
+      let currentY = startY;
+
+      return elements.map((el) => {
+        const hasExplicitPos = el.position && typeof el.position.x === "number" && typeof el.position.y === "number" && (el.position.x !== 0 || el.position.y !== 0);
+        const { width, height } = estimateElementDimensions(el, false);
+
+        if (hasExplicitPos) {
+          return { ...el, size: { width, height } };
+        }
+
+        const x = startX;
+        const y = currentY;
+        currentY += height + gapY;
+
+        return {
+          ...el,
+          position: { x, y },
+          size: { width, height },
+        };
+      });
+    }
+
+    // Fallback: Default clean category column grid
+    return layoutClusterColumns(elements, startX, startY);
+  };
+
+  /**
+   * Organizes elements into distinct vertical category columns side-by-side
+   */
+  const layoutClusterColumns = (elements, startX, startY) => {
+    const categories = new Map(); // normalizedKey -> { key, title, header: null, items: [] }
+    const uncategorized = [];
+
+    // Helper to get normalized alphanumeric key
+    const getCatKey = (str) => (str || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    // Pass 1: Identify and create area headers
+    elements.forEach((el) => {
+      const isArea = el.metadata?.kind === "area" ||
+                     el.id?.toLowerCase().startsWith("area") ||
+                     el.id?.toLowerCase().includes("header");
+
+      if (isArea) {
+        const catName = el.metadata?.category || el.text || el.id;
+        const key = getCatKey(catName) || getCatKey(el.id);
+        if (!categories.has(key)) {
+          categories.set(key, { key, title: el.text || catName, header: el, items: [] });
+        } else {
+          const group = categories.get(key);
+          if (!group.header) group.header = el;
+        }
+      }
+    });
+
+    // Pass 2: Group note cards under matching area headers
+    elements.forEach((el) => {
+      const isArea = el.metadata?.kind === "area" ||
+                     el.id?.toLowerCase().startsWith("area") ||
+                     el.id?.toLowerCase().includes("header");
+      if (isArea) return;
+
+      const elCat = el.metadata?.category;
+      let matchedGroup = null;
+
+      if (elCat) {
+        const key = getCatKey(elCat);
+        if (categories.has(key)) {
+          matchedGroup = categories.get(key);
+        } else {
+          for (const [gKey, group] of categories.entries()) {
+            if (gKey.includes(key) || key.includes(gKey)) {
+              matchedGroup = group;
+              break;
+            }
+          }
+        }
+      }
+
+      // Try matching by ID prefix (e.g. note_health_1 -> health)
+      if (!matchedGroup && el.id) {
+        const idKey = getCatKey(el.id.replace(/^note_/, "").replace(/_\d+$/, ""));
+        for (const [gKey, group] of categories.entries()) {
+          if (gKey.includes(idKey) || idKey.includes(gKey)) {
+            matchedGroup = group;
+            break;
+          }
+        }
+      }
+
+      if (matchedGroup) {
+        matchedGroup.items.push(el);
+      } else if (elCat) {
+        const key = getCatKey(elCat);
+        const newGroup = { key, title: elCat, header: null, items: [el] };
+        categories.set(key, newGroup);
+      } else {
+        uncategorized.push(el);
+      }
+    });
+
+    // If no categories were extracted, arrange in a responsive column grid
+    if (categories.size === 0) {
+      const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(elements.length))));
+      const colWidth = 330;
+      const colGap = 60;
+      const rowGap = 20;
+      const colYPositions = new Array(cols).fill(startY);
+
+      return elements.map((el, idx) => {
+        const isHeader = el.metadata?.kind === "area" || idx < cols;
+        const { width, height } = estimateElementDimensions(el, isHeader);
+        const colIdx = idx % cols;
+        const x = startX + colIdx * (colWidth + colGap);
+        const y = colYPositions[colIdx];
+        colYPositions[colIdx] += height + rowGap;
+
+        return {
+          ...el,
+          position: { x, y },
+          size: { width, height },
+        };
+      });
+    }
+
+    const groups = Array.from(categories.values()).filter(g => g.header || g.items.length > 0);
+    const colWidth = 330;
+    const colGap = 60;
+    const rowGap = 20;
+    const headerRowGap = 26;
+    const positioned = [];
+
+    groups.forEach((group, colIdx) => {
+      const colX = startX + colIdx * (colWidth + colGap);
+      let currentY = startY;
+
+      // Header card at top of column
+      if (group.header) {
+        const { width, height } = estimateElementDimensions(group.header, true);
+        positioned.push({
+          ...group.header,
+          position: { x: colX, y: currentY },
+          size: { width, height },
+        });
+        currentY += height + headerRowGap;
+      }
+
+      // Notes / Sub-cards stacked underneath with guaranteed vertical margins
+      group.items.forEach((item) => {
+        const { width, height } = estimateElementDimensions(item, false);
+        positioned.push({
+          ...item,
+          position: { x: colX, y: currentY },
+          size: { width, height },
+        });
+        currentY += height + rowGap;
+      });
+    });
+
+    // Place any uncategorized items into an extra column
+    if (uncategorized.length > 0) {
+      const colX = startX + groups.length * (colWidth + colGap);
+      let currentY = startY;
+
+      uncategorized.forEach((item) => {
+        const { width, height } = estimateElementDimensions(item, false);
+        positioned.push({
+          ...item,
+          position: { x: colX, y: currentY },
+          size: { width, height },
+        });
+        currentY += height + rowGap;
+      });
+    }
+
+    return positioned;
+  };
+
+  /**
+   * Handle user changes to canvas (save to localStorage)
+   */
+  const handleCanvasChange = (elements, state) => {
+    setCanvasElements(elements);
+    setAppState(state);
+  };
+
+  // Load saved canvas on initial mount
   useEffect(() => {
-    if (!editor || !items || items.length === 0) return;
-    if (items === prevItemsRef.current) return;
-    prevItemsRef.current = items;
+    try {
+      const saved = localStorage.getItem("thoughtcanvas-excalidraw");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.elements && parsed.elements.length > 0) {
+          console.log(`[CANVAS] 💾 Loaded ${parsed.elements.length} saved canvas element(s) from localStorage`);
+          setCanvasElements(parsed.elements);
+        }
+      }
+    } catch (e) {
+      console.warn("[CANVAS] Could not load saved canvas from localStorage:", e);
+    }
+  }, []);
 
-    syncItemsWithCanvas(editor, items, relationships, aiShapeIdsRef);
-  }, [editor, items, relationships]);
+  // Save canvas changes to localStorage
+  useEffect(() => {
+    if (canvasElements && canvasElements.length > 0) {
+      try {
+        localStorage.setItem(
+          "thoughtcanvas-excalidraw",
+          JSON.stringify({
+            elements: canvasElements,
+            appState: {
+              viewBackgroundColor: isDarkMode ? "#121212" : "#f8f9fa",
+            },
+          })
+        );
+      } catch (e) {
+        console.warn("[CANVAS] Could not save canvas to localStorage:", e);
+      }
+    }
+  }, [canvasElements, isDarkMode]);
 
   return (
-    <div className="canvas-wrap">
-      <div className="tldraw-container">
-        <Tldraw
-          persistenceKey="thoughtcanvas_canvas_v1"
-          onMount={onMountHandler}
-        />
-      </div>
+    <div style={{ height: "100%", width: "100%", position: "relative" }}>
+      <Excalidraw
+        excalidrawAPI={handleExcalidrawAPI}
+        onChange={handleCanvasChange}
+        initialData={{
+          elements: canvasElements,
+          appState: {
+            theme: isDarkMode ? "dark" : "light",
+            viewBackgroundColor: isDarkMode ? "#121212" : "#f8f9fa",
+          },
+        }}
+      />
 
-      {loading ? (
-        <div className="overlay">
-          <div className="overlay-card">Organizing your thoughts...</div>
+      {loading && (
+        <div
+          style={{
+            position: "absolute",
+            top: 20,
+            right: 20,
+            background: isDarkMode ? "rgba(18, 18, 18, 0.9)" : "rgba(255, 255, 255, 0.95)",
+            backdropFilter: "blur(8px)",
+            border: isDarkMode ? "1px solid rgba(255, 255, 255, 0.15)" : "1px solid rgba(0, 0, 0, 0.1)",
+            padding: "10px 20px",
+            borderRadius: 10,
+            boxShadow: "0 4px 16px rgba(0, 0, 0, 0.2)",
+            zIndex: 1000,
+            color: isDarkMode ? "#f3f4f6" : "#111827",
+            fontSize: 14,
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <span
+            style={{
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              backgroundColor: "#3b82f6",
+              animation: "pulse 1.5s infinite",
+            }}
+          />
+          Creating visual representation...
         </div>
-      ) : null}
+      )}
     </div>
   );
 }
