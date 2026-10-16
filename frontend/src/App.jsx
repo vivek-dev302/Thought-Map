@@ -16,6 +16,8 @@ export default function App() {
       return [];
     }
   });
+  const [undoStack, setUndoStack] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -60,10 +62,11 @@ export default function App() {
         throw new Error(detail || data.error || "Could not process visual command");
       }
 
-      // Set new visual commands, replacing previous canvas scene on new visualizations
+      // Set new visual commands, pushing previous snapshot to undo stack
       if (data.commands && data.commands.length > 0) {
         console.log(`[FRONTEND] ✨ Setting ${data.commands.length} visual command(s) into state`);
-        // Always replace with fresh generated commands to prevent stale overlapping layers
+        setUndoStack((prev) => [...prev.slice(-9), visualCommands]);
+        setRedoStack([]);
         setVisualCommands(data.commands);
       } else {
         console.warn("[FRONTEND] ⚠️ Response contained 0 visual commands");
@@ -79,8 +82,28 @@ export default function App() {
     }
   }
 
+  function handleUndo() {
+    if (undoStack.length === 0) return;
+    const previous = undoStack[undoStack.length - 1];
+    setUndoStack((prev) => prev.slice(0, -1));
+    setRedoStack((prev) => [...prev, visualCommands]);
+    setVisualCommands(previous);
+  }
+
+  function handleRedo() {
+    if (redoStack.length === 0) return;
+    const next = redoStack[redoStack.length - 1];
+    setRedoStack((prev) => prev.slice(0, -1));
+    setUndoStack((prev) => [...prev, visualCommands]);
+    setVisualCommands(next);
+  }
+
   function handleClear() {
     console.log("[FRONTEND] 🧹 Clearing canvas and reset state");
+    if (visualCommands.length > 0) {
+      setUndoStack((prev) => [...prev.slice(-9), visualCommands]);
+      setRedoStack([]);
+    }
     setVisualCommands([]);
     try {
       localStorage.removeItem(VISUAL_COMMANDS_KEY);
@@ -94,7 +117,51 @@ export default function App() {
     <div className="app">
       <header className="header">
         <h1 className="logo">ThoughtCanvas</h1>
-        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          {undoStack.length > 0 && (
+            <button
+              onClick={handleUndo}
+              title="Undo AI Action"
+              style={{
+                padding: "6px 12px",
+                fontSize: "13px",
+                borderRadius: "8px",
+                border: "1px solid var(--border)",
+                background: "var(--panel)",
+                color: "var(--text)",
+                cursor: "pointer",
+                fontWeight: 500,
+                display: "flex",
+                alignItems: "center",
+                gap: "4px",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <span>↶</span> Undo AI
+            </button>
+          )}
+          {redoStack.length > 0 && (
+            <button
+              onClick={handleRedo}
+              title="Redo AI Action"
+              style={{
+                padding: "6px 12px",
+                fontSize: "13px",
+                borderRadius: "8px",
+                border: "1px solid var(--border)",
+                background: "var(--panel)",
+                color: "var(--text)",
+                cursor: "pointer",
+                fontWeight: 500,
+                display: "flex",
+                alignItems: "center",
+                gap: "4px",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <span>↷</span> Redo AI
+            </button>
+          )}
           {visualCommands.length > 0 && (
             <button
               onClick={handleClear}

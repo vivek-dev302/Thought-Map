@@ -100,6 +100,8 @@ class ElementMetadata(BaseModel):
     """Semantic metadata for elements"""
     kind: Optional[str] = Field(default=None, description="Semantic kind (idea, problem, goal, step, component, etc.)")
     category: Optional[str] = Field(default=None, description="Category name")
+    row: Optional[int] = Field(default=None, description="Row index for multi-row layouts (0-based)")
+    column: Optional[int] = Field(default=None, description="Column index for grid layouts (0-based)")
 
 
 class VisualElement(BaseModel):
